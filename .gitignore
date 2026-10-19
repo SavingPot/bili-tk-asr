@@ -1,0 +1,7 @@
+SenseVoiceSmall-onnx/
+.venv/
+asr.log
+
+# 可能存在的 Python 缓存
+__pycache__/
+*.py[cod]
