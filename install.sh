@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================
-#  bili-tk-asr 一键安装脚本
-#  用法:
-#    ./install.sh                  # 默认装到 ./bili-tk-asr
-#    ./install.sh -d ~/apps/asr    # 指定安装目录
+#  bili-tk-asr 一键安装脚本（release 版）
+#  用法: 解压 release 包后，在解压目录内运行：
+#    ./install.sh                  # 安装到当前目录
 #    ./install.sh -s               # 跳过模型下载
 #    ./install.sh -m               # 强制使用 hf-mirror 镜像
 #    ./install.sh -n               # 强制直连 huggingface
@@ -11,12 +10,13 @@
 # =============================================================
 set -euo pipefail
 
-REPO_URL="https://github.com/SavingPot/bili-tk-asr.git"
-REPO_NAME="bili-tk-asr"
 PYTHON_VER="3.12"
 HF_MIRROR="${HF_MIRROR:-https://hf-mirror.com}"
 
-INSTALL_DIR="$(pwd)/$REPO_NAME"
+# 项目根目录 = 本脚本所在目录（release 解压后的目录）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="$SCRIPT_DIR"
+
 USE_MIRROR="auto"      # auto | always | never
 SKIP_MODEL=0
 FORCE=0
@@ -33,11 +33,10 @@ ok  (){ echo "${GRN}[ OK ]${NC} $*"; }
 warn(){ echo "${YEL}[WARN]${NC} $*"; }
 die (){ echo "${RED}[FAIL]${NC} $*" >&2; exit 1; }
 
-usage(){ sed -n '3,11p' "$0" | sed 's/^#  \{0,1\}//'; }
+usage(){ sed -n '3,10p' "$0" | sed 's/^#  \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -d|--dir)        INSTALL_DIR="$2"; shift 2 ;;
     -m|--mirror)     USE_MIRROR="always"; shift ;;
     -n|--no-mirror)  USE_MIRROR="never";  shift ;;
     -s|--skip-model) SKIP_MODEL=1; shift ;;
@@ -60,7 +59,6 @@ pause(){
   if [[ -t 0 ]]; then
     read -r _ || true
   elif [[ -r /dev/tty ]]; then
-    # stdin 被管道占用（如 curl ... | bash）时，从终端读
     read -r _ < /dev/tty || true
   else
     warn "无可用终端，跳过暂停（可用 -y 显式关闭此提示）"
@@ -68,8 +66,6 @@ pause(){
 }
 
 # ---------- 询问 yes/no ----------
-# 用法: confirm "提示文字" [默认值 y|n]
-#  -y 时直接返回 0（视为同意）
 confirm(){
   local msg="$1"
   local default="${2:-y}"
@@ -102,13 +98,19 @@ confirm(){
 # ---------- 依赖检查 ----------
 need(){ command -v "$1" >/dev/null 2>&1 || die "缺少命令 '$1'，请先安装"; }
 
-need git
 if ! command -v uv >/dev/null 2>&1; then
   die "缺少 uv。请先执行:  curl -LsSf https://astral.sh/uv/install.sh | sh   然后重开终端"
 fi
 if ! command -v wget >/dev/null 2>&1 && ! command -v curl >/dev/null 2>&1; then
   die "需要 wget 或 curl 之一用于下载模型"
 fi
+
+# 校验 release 是否完整解压
+for f in launch_asr.sh server.py; do
+  [[ -f "$INSTALL_DIR/$f" ]] || die "缺少 $f，请确认 release 包已完整解压到 $INSTALL_DIR"
+done
+
+cd "$INSTALL_DIR"
 
 # ---------- 下载工具 ----------
 fetch(){
@@ -138,7 +140,7 @@ download_hf(){
   return 1
 }
 
-# ---------- 注册 bili-asr:// URL 协议（原 install_protocol.sh 逻辑） ----------
+# ---------- 注册 bili-asr:// URL 协议 ----------
 register_protocol(){
   local launch_script="$INSTALL_DIR/launch_asr.sh"
   local desktop_file="$HOME/.local/share/applications/bili-asr-handler.desktop"
@@ -157,10 +159,8 @@ register_protocol(){
     return 0
   fi
 
-  # 确保启动脚本有执行权限
   chmod +x "$launch_script" || { warn "无法设置 $launch_script 执行权限，跳过协议注册"; return 0; }
 
-  # 期望的 .desktop 内容
   local desired
   desired="$(cat <<EOF
 [Desktop Entry]
@@ -175,7 +175,6 @@ EOF
 
   mkdir -p "$HOME/.local/share/applications"
 
-  # 判断是否需要写文件
   local need_write=0
   if [[ -f "$desktop_file" ]]; then
     local current
@@ -183,7 +182,7 @@ EOF
     if [[ "$current" == "$desired" ]]; then
       ok "桌面文件已存在且内容一致，跳过写入: $desktop_file"
     else
-      info "检测到已存在的桌面文件（内容不同，可能安装目录变更），需要更新: $desktop_file"
+      info "检测到已存在的桌面文件（内容不同，可能目录变更），需要更新: $desktop_file"
       need_write=1
     fi
   else
@@ -191,7 +190,6 @@ EOF
     need_write=1
   fi
 
-  # 需要写入时先询问用户
   if [[ "$need_write" == "1" ]]; then
     echo
     echo "${YEL}⚠  强烈建议添加 .desktop 文件${NC}"
@@ -208,12 +206,10 @@ EOF
     ok "已写入: $desktop_file"
   fi
 
-  # 刷新桌面数据库
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$HOME/.local/share/applications/" 2>/dev/null || true
   fi
 
-  # 检测协议当前默认处理器，避免重复注册
   local current_handler
   current_handler="$(xdg-mime query default x-scheme-handler/bili-asr 2>/dev/null || true)"
   if [[ "$current_handler" == "$desktop_name" ]]; then
@@ -229,21 +225,9 @@ EOF
   fi
 }
 
-# ---------- 1. 获取代码 ----------
+# ---------- 1. 虚拟环境 ----------
 echo
-info "== 步骤 1/5: 获取代码 =="
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  warn "目录已存在: $INSTALL_DIR ，尝试 git pull 更新"
-  git -C "$INSTALL_DIR" pull --ff-only || warn "更新失败（可能有本地改动），继续使用现有代码"
-else
-  git clone "$REPO_URL" "$INSTALL_DIR"
-fi
-ok "代码就绪: $INSTALL_DIR"
-cd "$INSTALL_DIR"
-
-# ---------- 2. 虚拟环境 ----------
-echo
-info "== 步骤 2/5: 创建 Python $PYTHON_VER 虚拟环境 =="
+info "== 步骤 1/4: 创建 Python $PYTHON_VER 虚拟环境 =="
 if [[ ! -x ".venv/bin/python" || "$FORCE" == "1" ]]; then
   rm -rf .venv
   uv venv --python "$PYTHON_VER"
@@ -252,12 +236,12 @@ VENV_PY="$INSTALL_DIR/.venv/bin/python"
 "$VENV_PY" -V
 ok "虚拟环境: $INSTALL_DIR/.venv"
 
-# ---------- 3. 安装依赖 ----------
+# ---------- 2. 安装依赖 ----------
 echo
 pause "接下来安装 Python 依赖（走 PyPI 或你本地的 pip 镜像）。
        国内一般直连即可；如果你平时需要关 VPN 才能用镜像源，现在去关。"
 
-info "== 步骤 3/5: 安装 Python 依赖 =="
+info "== 步骤 2/4: 安装 Python 依赖 =="
 uv pip install --python "$VENV_PY" \
   fastapi uvicorn python-multipart funasr_onnx modelscope
 
@@ -270,15 +254,15 @@ if ! "$VENV_PY" -c "import funasr_onnx" >/dev/null 2>&1; then
 fi
 ok "依赖安装完成"
 
-# ---------- 4. 下载模型 ----------
+# ---------- 3. 下载模型 ----------
 echo
 if [[ "$SKIP_MODEL" == "1" ]]; then
-  warn "== 步骤 4/5: 跳过模型下载（--skip-model）=="
+  warn "== 步骤 3/4: 跳过模型下载（--skip-model）=="
 else
   pause "接下来下载模型（默认先连 huggingface.co 官方，失败才回退 hf-mirror）。
        国内通常需要开 VPN。不想开 VPN 的话：Ctrl-C 取消，改用  ./install.sh -m  走镜像。"
 
-  info "== 步骤 4/5: 下载 SenseVoiceSmall ONNX 模型 =="
+  info "== 步骤 3/4: 下载 SenseVoiceSmall ONNX 模型 =="
   MODEL_DIR="$INSTALL_DIR/SenseVoiceSmall-onnx"
   mkdir -p "$MODEL_DIR"
   pushd "$MODEL_DIR" >/dev/null
@@ -309,9 +293,9 @@ else
   ok "模型目录: $MODEL_DIR"
 fi
 
-# ---------- 5. 注册 bili-asr:// 协议 ----------
+# ---------- 4. 注册 bili-asr:// 协议 ----------
 echo
-info "== 步骤 5/5: 注册 bili-asr:// URL 协议并添加 .desktop 文件 =="
+info "== 步骤 4/4: 注册 bili-asr:// URL 协议并添加 .desktop 文件 =="
 register_protocol
 
 # ---------- 完成 ----------
